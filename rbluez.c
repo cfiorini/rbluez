@@ -20,6 +20,7 @@
 
 #include "ruby.h"
 #include "rubyio.h"
+#include "rubysig.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
@@ -28,6 +29,7 @@
 #include <bluetooth/hci.h>
 #include <bluetooth/hci_lib.h>
 #include <bluetooth/rfcomm.h>
+#include <bluetooth/l2cap.h>
 
 
 VALUE Rbluez = Qnil;
@@ -254,10 +256,6 @@ VALUE method_rbluez_initialize(VALUE klass)
 {
 	rzadapter_t *rza = malloc(sizeof(rzadapter_t));
 	
-	/**
-	* Setting hci_get_route to NULL, it returns
-	* the first adapter available 
-	*/
 	rza->dev_id = hci_get_route(NULL);
 	rza->sock_id = hci_open_dev(rza->dev_id);
 
@@ -301,7 +299,8 @@ VALUE method_rbluez_inquiry(VALUE klass)
 			get_minor_device_name((ii+i)->dev_class[1] & 0x1f, (ii+i)->dev_class[0] >> 2));
 
 	/*
-	*	sprintf(dev_class, "0x%2.2x%2.2x%2.2x", (ii+i)->dev_class[2], (ii+i)->dev_class[1], (ii+i)->dev_class[0]);
+	*	sprintf(dev_class, "0x%2.2x%2.2x%2.2x", (ii+i)->dev_class[2],
+	*				 (ii+i)->dev_class[1], (ii+i)->dev_class[0]);
 	*/
 		rb_hash_aset(dev_remote, rb_str_new2("dev_class"), rb_str_new2(dev_class));
 
@@ -393,14 +392,19 @@ VALUE method_rbluez_remote_name(VALUE klass, VALUE str)
 	char name[32] = { 0 };
 	bdaddr_t addr;
 
-	Data_Get_Struct(klass, rzadapter_t, rza);
+	if(TYPE(str) == T_STRING && TYPE(str) != T_NIL) {
+		Data_Get_Struct(klass, rzadapter_t, rza);
 
-	str2ba(RSTRING(str)->ptr, &addr);
-	memset(name, 0, sizeof(name));
-	if(hci_read_remote_name(rza->sock_id, &addr, sizeof(name), name, 0) < 0)
+		str2ba(RSTRING(str)->ptr, &addr);
+		memset(name, 0, sizeof(name));
+		if(hci_read_remote_name(rza->sock_id, &addr, sizeof(name), name, 0) < 0)
+			return Qnil;
+		
+		return rb_str_new2(name);
+	} else {
+		rb_raise(rb_eTypeError, "not valid value");
 		return Qnil;
-	
-	return rb_str_new2(name);
+	}
 }
 
 VALUE method_rbluez_write_local_name(VALUE klass, VALUE str)
@@ -433,6 +437,147 @@ VALUE method_rbluez_close(VALUE klass)
 	return INT2FIX(close(rza->sock_id));
 }
 
+
+/* SOCKET FUNCTIONS */
+
+static int
+ruby_socket(domain, type, proto)
+    int domain, type, proto;
+{
+    int fd;
+
+    fd = socket(domain, type, proto);
+    if (fd < 0) {
+	if (errno == EMFILE || errno == ENFILE) {
+	    rb_gc();
+	    fd = socket(domain, type, proto);
+	}
+    }
+    return fd;
+}
+
+static VALUE
+init_sock(sock, fd)
+    VALUE sock;
+    int fd;
+{
+    OpenFile *fp;
+
+    MakeOpenFile(sock, fp);
+    fp->f = rb_fdopen(fd, "r");
+    fp->f2 = rb_fdopen(fd, "w");
+    fp->mode = FMODE_READWRITE;
+    rb_io_synchronized(fp);
+
+    return sock;
+}
+
+
+/* RFCOMM FUNCTIONS */
+
+static VALUE
+method_rfcomm_initialize(VALUE klass)
+{
+    int fd;
+
+    rb_secure(3);
+    fd = ruby_socket(AF_BLUETOOTH, SOCK_STREAM, BTPROTO_RFCOMM);
+    if (fd < 0) rb_sys_fail("socket(2)");
+
+    return init_sock(klass, fd);
+}
+
+static VALUE
+method_rfcomm_bind(VALUE klass, VALUE port)
+{
+	OpenFile *fptr;
+	struct sockaddr_rc l_addr = { 0 };
+
+	if(TYPE(port) == T_FIXNUM) {
+		GetOpenFile(klass, fptr);
+		l_addr.rc_family = AF_BLUETOOTH;
+		l_addr.rc_bdaddr = *BDADDR_ANY;
+		l_addr.rc_channel = (uint8_t) NUM2INT(port);
+		if (bind(fileno(fptr->f), (struct sockaddr*)&l_addr, sizeof(l_addr)) < 0)
+			rb_sys_fail("bind(2)");
+
+		return INT2FIX(0);
+	} else {
+		rb_raise(rb_eTypeError, "not value value");
+		return Qnil;
+	}
+}
+
+static VALUE
+method_rfcomm_listen(sock, log)
+    VALUE sock, log;
+{
+    OpenFile *fptr;
+
+    rb_secure(4);
+    GetOpenFile(sock, fptr);
+    if (listen(fileno(fptr->f), NUM2INT(log) < 0));
+	rb_sys_fail("listen(2)");
+
+    return INT2FIX(0);
+}
+
+static VALUE
+s_accept(klass, fd, r_addr, len)
+    VALUE klass;
+    int fd;
+    struct sockaddr_rc *r_addr;
+    socklen_t len;
+{
+    int fd2;
+    int retry = 0;
+
+    rb_secure(3);
+  retry:
+    rb_thread_wait_fd(fd);
+#if defined(_nec_ews)
+    fd2 = accept(fd, (struct sockaddr *)&r_addr, &len);
+#else
+    TRAP_BEG;
+    fd2 = accept(fd, (struct sockaddr *)&r_addr, &len);
+    TRAP_END;
+#endif
+    if (fd2 < 0) {
+	switch (errno) {
+	  case EMFILE:
+	  case ENFILE:
+	    if (retry) break;
+	    rb_gc();
+	    retry = 1;
+	    goto retry;
+	  case EWOULDBLOCK:
+	    break;
+	  default:
+	    if (!rb_io_wait_readable(fd)) break;
+	    retry = 0;
+	    goto retry;
+	}
+	rb_sys_fail(0);
+    }
+    if (!klass) return INT2NUM(fd2);
+    return init_sock(rb_obj_alloc(klass), fd2);
+}
+
+static VALUE
+method_rfcomm_accept(sock)
+    VALUE sock;
+{
+	OpenFile *fptr;
+	VALUE sock2;
+	struct sockaddr_rc r_addr;
+
+	GetOpenFile(sock, fptr);
+	sock2 = s_accept(Rbluez,fileno(fptr->f), &r_addr, sizeof(r_addr));
+
+	return sock2;
+}
+
+
 void Init_rbluez()
 {
 	Rbluez = rb_define_class("Rbluez", rb_cObject);
@@ -446,6 +591,11 @@ void Init_rbluez()
 	rb_define_method(Rbluez, "rz_set_local_name", method_rbluez_write_local_name, 1);
 	rb_define_method(Rbluez, "rz_set_local_cod", method_rbluez_write_local_cod, 1);
 	rb_define_method(Rbluez, "rz_close", method_rbluez_close, 0);
+
+	rb_define_method(Rbluez, "rfcomm_socket", method_rfcomm_initialize, 0); 
+	rb_define_method(Rbluez, "rfcomm_bind", method_rfcomm_bind, 1); 
+	rb_define_method(Rbluez, "rfcomm_listen", method_rfcomm_listen, 1); 
+	rb_define_method(Rbluez, "rfcomm_accept", method_rfcomm_accept, 1); 
 
 	rb_define_const(Rbluez, "AF_BLUETOOTH", INT2FIX(AF_BLUETOOTH));
 	rb_define_const(Rbluez, "PF_BLUETOOTH", INT2FIX(AF_BLUETOOTH));
