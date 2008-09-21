@@ -24,6 +24,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
+#include <errno.h>
 #include <sys/socket.h>
 #include <bluetooth/bluetooth.h>
 #include <bluetooth/hci.h>
@@ -456,131 +457,34 @@ ruby_socket(domain, type, proto)
     return fd;
 }
 
-static VALUE
-init_sock(sock, fd)
-    VALUE sock;
-    int fd;
-{
-    OpenFile *fp;
-
-    MakeOpenFile(sock, fp);
-    fp->f = rb_fdopen(fd, "r");
-    fp->f2 = rb_fdopen(fd, "w");
-    fp->mode = FMODE_READWRITE;
-    rb_io_synchronized(fp);
-
-    return sock;
-}
 
 
 /* RFCOMM FUNCTIONS */
 
 static VALUE
-method_rfcomm_initialize(VALUE klass)
+method_rfcomm_initialize(VALUE sock)
 {
-    int fd;
+    	int fd;
+    	OpenFile *fp;
 
-    rb_secure(3);
-    fd = ruby_socket(AF_BLUETOOTH, SOCK_STREAM, BTPROTO_RFCOMM);
-    if (fd < 0) rb_sys_fail("socket(2)");
+    	rb_secure(3);
+    	fd = ruby_socket(AF_BLUETOOTH, SOCK_STREAM, BTPROTO_RFCOMM);
+    	if (fd < 0) rb_sys_fail("socket(2)");
 
-    return init_sock(klass, fd);
-}
+    	MakeOpenFile(sock, fp);
 
-static VALUE
-method_rfcomm_bind(VALUE klass, VALUE port)
-{
-	OpenFile *fptr;
-	struct sockaddr_rc l_addr = { 0 };
+    	fp->f = rb_fdopen(fd, "r");
+    	fp->f2 = rb_fdopen(fd, "w");
+    	fp->mode = FMODE_READWRITE;
+    	rb_io_synchronized(fp);
 
-	if(TYPE(port) == T_FIXNUM) {
-		GetOpenFile(klass, fptr);
-		l_addr.rc_family = AF_BLUETOOTH;
-		l_addr.rc_bdaddr = *BDADDR_ANY;
-		l_addr.rc_channel = (uint8_t) NUM2INT(port);
-		if (bind(fileno(fptr->f), (struct sockaddr*)&l_addr, sizeof(l_addr)) < 0)
-			rb_sys_fail("bind(2)");
-
-		return INT2FIX(0);
-	} else {
-		rb_raise(rb_eTypeError, "not value value");
-		return Qnil;
-	}
-}
-
-static VALUE
-method_rfcomm_listen(sock, log)
-    VALUE sock, log;
-{
-    OpenFile *fptr;
-
-    rb_secure(4);
-    GetOpenFile(sock, fptr);
-    if (listen(fileno(fptr->f), NUM2INT(log) < 0));
-	rb_sys_fail("listen(2)");
-
-    return INT2FIX(0);
-}
-
-static VALUE
-s_accept(klass, fd, r_addr, len)
-    VALUE klass;
-    int fd;
-    struct sockaddr_rc *r_addr;
-    socklen_t len;
-{
-    int fd2;
-    int retry = 0;
-
-    rb_secure(3);
-  retry:
-    rb_thread_wait_fd(fd);
-#if defined(_nec_ews)
-    fd2 = accept(fd, (struct sockaddr *)&r_addr, &len);
-#else
-    TRAP_BEG;
-    fd2 = accept(fd, (struct sockaddr *)&r_addr, &len);
-    TRAP_END;
-#endif
-    if (fd2 < 0) {
-	switch (errno) {
-	  case EMFILE:
-	  case ENFILE:
-	    if (retry) break;
-	    rb_gc();
-	    retry = 1;
-	    goto retry;
-	  case EWOULDBLOCK:
-	    break;
-	  default:
-	    if (!rb_io_wait_readable(fd)) break;
-	    retry = 0;
-	    goto retry;
-	}
-	rb_sys_fail(0);
-    }
-    if (!klass) return INT2NUM(fd2);
-    return init_sock(rb_obj_alloc(klass), fd2);
-}
-
-static VALUE
-method_rfcomm_accept(sock)
-    VALUE sock;
-{
-	OpenFile *fptr;
-	VALUE sock2;
-	struct sockaddr_rc r_addr;
-
-	GetOpenFile(sock, fptr);
-	sock2 = s_accept(Rbluez,fileno(fptr->f), &r_addr, sizeof(r_addr));
-
-	return sock2;
+	return sock;
 }
 
 
 void Init_rbluez()
 {
-	Rbluez = rb_define_class("Rbluez", rb_cObject);
+	Rbluez = rb_define_class("Rbluez", rb_cIO);
 	rb_define_singleton_method(Rbluez, "new", method_rbluez_initialize, 0);
 	
 	rb_define_method(Rbluez, "rz_scan", method_rbluez_inquiry, 0);
@@ -593,14 +497,18 @@ void Init_rbluez()
 	rb_define_method(Rbluez, "rz_close", method_rbluez_close, 0);
 
 	rb_define_method(Rbluez, "rfcomm_socket", method_rfcomm_initialize, 0); 
-	rb_define_method(Rbluez, "rfcomm_bind", method_rfcomm_bind, 1); 
-	rb_define_method(Rbluez, "rfcomm_listen", method_rfcomm_listen, 1); 
-	rb_define_method(Rbluez, "rfcomm_accept", method_rfcomm_accept, 1); 
+	/*
+     	rb_define_method(Rbluez, "rfcomm_bind", method_rfcomm_bind, 1); 
+     	rb_define_method(Rbluez, "rfcomm_listen", method_rfcomm_listen, 1); 
+	rb_define_method(Rbluez, "rfcomm_accept", method_rfcomm_accept, 0); 
+	rb_define_method(Rbluez, "rfcomm_read", method_sock_recvfrom, -1); 
+	rb_define_method(Rbluez, "rfcomm_close", method_sock_close, -1);
+     	*/
 
 	rb_define_const(Rbluez, "AF_BLUETOOTH", INT2FIX(AF_BLUETOOTH));
 	rb_define_const(Rbluez, "PF_BLUETOOTH", INT2FIX(AF_BLUETOOTH));
-	rb_define_const(Rbluez, "SOL_BLUETOOTH", INT2FIX(SOL_BLUETOOTH));
 	rb_define_const(Rbluez, "BTPROTO_L2CAP", INT2FIX(BTPROTO_L2CAP));
+	rb_define_const(Rbluez, "BTPROTO_RFCOMM", INT2FIX(BTPROTO_RFCOMM));
 	rb_define_const(Rbluez, "BTPROTO_HCI", INT2FIX(BTPROTO_HCI));
 
 	/* Class of Device */
@@ -619,5 +527,4 @@ void Init_rbluez()
 	rb_define_const(Rbluez, "COD_PHONE_WIREDMODEM", rb_str_new2("0x0210"));
 	rb_define_const(Rbluez, "COD_PHONE_ISDNACCESS", rb_str_new2("0x0214"));
 	rb_define_const(Rbluez, "COD_PHONE_SIMREADER", rb_str_new2("0x0218"));
-
 }
