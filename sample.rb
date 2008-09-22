@@ -1,11 +1,9 @@
 require 'rbluez'
-bt = Rbluez.new
-#for r in bt.rz_scan
-#	p r 
-#end
-puts bt.rfcomm_socket
-#s.rfcomm_bind(1)
-#s.rfcomm_listen(1)
-#s.rfcomm_accept
-#puts s.rfcomm_read
-bt.rz_close
+include Rbluez
+
+bt = Rfcomm.new
+puts bt
+bt.rfcomm_bind
+bt.rfcomm_listen(29)
+puts bt.rfcomm_accept
+bt.rfcomm_close

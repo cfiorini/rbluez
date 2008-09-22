@@ -33,7 +33,9 @@
 #include <bluetooth/l2cap.h>
 
 
-VALUE Rbluez = Qnil;
+VALUE rb_mRbluez;
+VALUE rb_cHci;
+VALUE rb_cRfcomm;
 
 void Init_rbluez();
 
@@ -253,7 +255,7 @@ void rzadapter_free(rzadapter_t* self)
 	free(self);
 }
 
-VALUE method_rbluez_initialize(VALUE klass)
+VALUE bz_hci_init(VALUE klass)
 {
 	rzadapter_t *rza = malloc(sizeof(rzadapter_t));
 	
@@ -266,7 +268,7 @@ VALUE method_rbluez_initialize(VALUE klass)
 	return Data_Wrap_Struct(klass, rzadapter_mark, rzadapter_free, rza);
 }
 
-VALUE method_rbluez_inquiry(VALUE klass)
+VALUE bz_hci_inquiry(VALUE klass)
 {
 	rzadapter_t* rza;
 	inquiry_info *ii;
@@ -311,7 +313,7 @@ VALUE method_rbluez_inquiry(VALUE klass)
 	return remote_devices;
 }
 
-VALUE method_rbluez_local_name(VALUE klass)
+VALUE bz_hci_local_name(VALUE klass)
 {
 	rzadapter_t* rza;
 	char name[32] = { 0 };
@@ -325,7 +327,7 @@ VALUE method_rbluez_local_name(VALUE klass)
 	return rb_str_new2(name);
 }
 
-VALUE method_rbluez_local_bdaddr(VALUE klass)
+VALUE bz_hci_local_bdaddr(VALUE klass)
 {
 	rzadapter_t* rza;
 	bdaddr_t bdaddr;
@@ -340,7 +342,7 @@ VALUE method_rbluez_local_bdaddr(VALUE klass)
 	return rb_str_new2(addr);
 }
 
-VALUE method_rbluez_local_cod(VALUE klass)
+VALUE bz_hci_local_cod(VALUE klass)
 {
 	rzadapter_t* rza;
 	char *dev_class = bt_malloc(32);
@@ -359,7 +361,7 @@ VALUE method_rbluez_local_cod(VALUE klass)
 	return rb_str_new2(dev_class); 
 }
 
-VALUE method_rbluez_write_local_cod(VALUE klass, VALUE cod)
+VALUE bz_hci_write_local_cod(VALUE klass, VALUE cod)
 {
 	rzadapter_t* rza;
 	uint32_t cls;
@@ -387,7 +389,7 @@ VALUE method_rbluez_write_local_cod(VALUE klass, VALUE cod)
 	}
 }
 
-VALUE method_rbluez_remote_name(VALUE klass, VALUE str)
+VALUE bz_hci_remote_name(VALUE klass, VALUE str)
 {
 	rzadapter_t* rza;
 	char name[32] = { 0 };
@@ -408,7 +410,7 @@ VALUE method_rbluez_remote_name(VALUE klass, VALUE str)
 	}
 }
 
-VALUE method_rbluez_write_local_name(VALUE klass, VALUE str)
+VALUE bz_hci_write_local_name(VALUE klass, VALUE str)
 {
 	rzadapter_t* rza;
 	
@@ -429,7 +431,7 @@ VALUE method_rbluez_write_local_name(VALUE klass, VALUE str)
 	}
 }
 
-VALUE method_rbluez_close(VALUE klass)
+VALUE bz_hci_close(VALUE klass)
 {
 	rzadapter_t* rza;
 
@@ -441,9 +443,7 @@ VALUE method_rbluez_close(VALUE klass)
 
 /* SOCKET FUNCTIONS */
 
-static int
-ruby_socket(domain, type, proto)
-    int domain, type, proto;
+static int ruby_socket(int domain, int type, int proto)
 {
     int fd;
 
@@ -457,74 +457,170 @@ ruby_socket(domain, type, proto)
     return fd;
 }
 
+static VALUE init_sock(VALUE sock, int fd)
+{
+    OpenFile *fp;
 
+    MakeOpenFile(sock, fp);
+    fp->f = rb_fdopen(fd, "r");
+    fp->f2 = rb_fdopen(fd, "w");
+    fp->mode = FMODE_READWRITE;
+    rb_io_synchronized(fp);
+
+    return sock;
+}
 
 /* RFCOMM FUNCTIONS */
-
-static VALUE
-method_rfcomm_initialize(VALUE sock)
+static VALUE bz_rfcomm_init(VALUE sock)
 {
     	int fd;
-    	OpenFile *fp;
 
     	rb_secure(3);
     	fd = ruby_socket(AF_BLUETOOTH, SOCK_STREAM, BTPROTO_RFCOMM);
     	if (fd < 0) rb_sys_fail("socket(2)");
 
-    	MakeOpenFile(sock, fp);
-
-    	fp->f = rb_fdopen(fd, "r");
-    	fp->f2 = rb_fdopen(fd, "w");
-    	fp->mode = FMODE_READWRITE;
-    	rb_io_synchronized(fp);
-
-	return sock;
+	return init_sock(sock, fd);
 }
 
 
+static VALUE bz_rfcomm_bind(VALUE sock)
+{
+	OpenFile *fptr;
+	struct sockaddr_rc loc_addr = {};
+
+	loc_addr.rc_family = AF_BLUETOOTH;
+	loc_addr.rc_bdaddr = *BDADDR_ANY;
+	loc_addr.rc_channel = (uint8_t) 29;
+
+	GetOpenFile(sock, fptr);
+	if (bind(fileno(fptr->f), (struct sockaddr*)&loc_addr, sizeof(loc_addr)) < 0)
+		rb_sys_fail("bind(2)");
+
+	return INT2FIX(0);
+}
+
+
+static VALUE bz_rfcomm_listen(VALUE sock, VALUE log)
+{
+	OpenFile *fptr;
+
+	rb_secure(4);
+	GetOpenFile(sock, fptr);
+	if (listen(fileno(fptr->f), NUM2INT(log)) < 0)
+		rb_sys_fail("listen(2)");
+
+	return INT2FIX(0);
+}
+
+
+static VALUE s_accept(klass, fd, sockaddr, len)
+    VALUE klass;
+    int fd;
+    struct sockaddr *sockaddr;
+    socklen_t len;
+{
+    int fd2;
+    int retry = 0;
+
+    rb_secure(3);
+  retry:
+    rb_thread_wait_fd(fd);
+#if defined(_nec_ews)
+    fd2 = accept(fd, sockaddr, len);
+#else
+    TRAP_BEG;
+    fd2 = accept(fd, sockaddr, &len);
+    TRAP_END;
+#endif
+    if (fd2 < 0) {
+	switch (errno) {
+	  case EMFILE:
+	  case ENFILE:
+	    if (retry) break;
+	    rb_gc();
+	    retry = 1;
+	    goto retry;
+	  case EWOULDBLOCK:
+	    break;
+	  default:
+	    if (!rb_io_wait_readable(fd)) break;
+	    retry = 0;
+	    goto retry;
+	}
+	rb_sys_fail(0);
+    }
+    if (!klass) return INT2NUM(fd2);
+    return init_sock(rb_obj_alloc(klass), fd2);
+}
+
+static VALUE bz_rfcomm_accept(VALUE sock)
+{
+	OpenFile *fptr;
+	VALUE sock2;
+	struct sockaddr_rc rem_addr;
+	char addr[19] = { 0 };
+
+	GetOpenFile(sock, fptr);
+	sock2 = s_accept(rb_cRfcomm,fileno(fptr->f), (struct sockaddr *)&rem_addr, sizeof(rem_addr));
+	ba2str(&rem_addr.rc_bdaddr, addr);
+	return rb_assoc_new(sock2, rb_str_new2(addr));
+}
+
+static VALUE bz_rfcomm_close(VALUE sock)
+{
+    OpenFile *fptr;
+
+    if (rb_safe_level() >= 4 && !OBJ_TAINTED(sock)) {
+	rb_raise(rb_eSecurityError, "Insecure: can't close socket");
+    }
+    GetOpenFile(sock, fptr);
+    shutdown(fileno(fptr->f), 2);
+    shutdown(fileno(fptr->f2), 2);
+    return rb_io_close(sock);
+}
+
 void Init_rbluez()
 {
-	Rbluez = rb_define_class("Rbluez", rb_cIO);
-	rb_define_singleton_method(Rbluez, "new", method_rbluez_initialize, 0);
-	
-	rb_define_method(Rbluez, "rz_scan", method_rbluez_inquiry, 0);
-	rb_define_method(Rbluez, "rz_local_name", method_rbluez_local_name, 0);
-	rb_define_method(Rbluez, "rz_local_bdaddr", method_rbluez_local_bdaddr, 0);
-	rb_define_method(Rbluez, "rz_local_cod", method_rbluez_local_cod, 0);
-	rb_define_method(Rbluez, "rz_remote_name", method_rbluez_remote_name, 1);
-	rb_define_method(Rbluez, "rz_set_local_name", method_rbluez_write_local_name, 1);
-	rb_define_method(Rbluez, "rz_set_local_cod", method_rbluez_write_local_cod, 1);
-	rb_define_method(Rbluez, "rz_close", method_rbluez_close, 0);
+	rb_mRbluez = rb_define_module("Rbluez");
 
-	rb_define_method(Rbluez, "rfcomm_socket", method_rfcomm_initialize, 0); 
-	/*
-     	rb_define_method(Rbluez, "rfcomm_bind", method_rfcomm_bind, 1); 
-     	rb_define_method(Rbluez, "rfcomm_listen", method_rfcomm_listen, 1); 
-	rb_define_method(Rbluez, "rfcomm_accept", method_rfcomm_accept, 0); 
-	rb_define_method(Rbluez, "rfcomm_read", method_sock_recvfrom, -1); 
-	rb_define_method(Rbluez, "rfcomm_close", method_sock_close, -1);
-     	*/
+	rb_cHci = rb_define_class_under(rb_mRbluez, "Hci", rb_cObject);
+	rb_define_singleton_method(rb_cHci, "new", bz_hci_init, 0);	
+	rb_define_method(rb_cHci, "hci_scan", bz_hci_inquiry, 0);
+	rb_define_method(rb_cHci, "hci_local_name", bz_hci_local_name, 0);
+	rb_define_method(rb_cHci, "hci_local_bdaddr", bz_hci_local_bdaddr, 0);
+	rb_define_method(rb_cHci, "hci_local_cod", bz_hci_local_cod, 0);
+	rb_define_method(rb_cHci, "hci_remote_name", bz_hci_remote_name, 1);
+	rb_define_method(rb_cHci, "hci_set_local_name", bz_hci_write_local_name, 1);
+	rb_define_method(rb_cHci, "hci_set_local_cod", bz_hci_write_local_cod, 1);
+	rb_define_method(rb_cHci, "hci_close", bz_hci_close, 0);
 
-	rb_define_const(Rbluez, "AF_BLUETOOTH", INT2FIX(AF_BLUETOOTH));
-	rb_define_const(Rbluez, "PF_BLUETOOTH", INT2FIX(AF_BLUETOOTH));
-	rb_define_const(Rbluez, "BTPROTO_L2CAP", INT2FIX(BTPROTO_L2CAP));
-	rb_define_const(Rbluez, "BTPROTO_RFCOMM", INT2FIX(BTPROTO_RFCOMM));
-	rb_define_const(Rbluez, "BTPROTO_HCI", INT2FIX(BTPROTO_HCI));
+	rb_cRfcomm = rb_define_class_under(rb_mRbluez, "Rfcomm", rb_cIO);
+	rb_define_method(rb_cRfcomm, "initialize", bz_rfcomm_init, 0); 
+	rb_define_method(rb_cRfcomm, "rfcomm_bind", bz_rfcomm_bind, 0);
+	rb_define_method(rb_cRfcomm, "rfcomm_listen", bz_rfcomm_listen, 1);
+	rb_define_method(rb_cRfcomm, "rfcomm_accept", bz_rfcomm_accept, 0);
+	rb_define_method(rb_cRfcomm, "rfcomm_close", bz_rfcomm_close, 0);
+
+	rb_define_const(rb_mRbluez, "AF_BLUETOOTH", INT2FIX(AF_BLUETOOTH));
+	rb_define_const(rb_mRbluez, "PF_BLUETOOTH", INT2FIX(AF_BLUETOOTH));
+	rb_define_const(rb_mRbluez, "BTPROTO_L2CAP", INT2FIX(BTPROTO_L2CAP));
+	rb_define_const(rb_mRbluez, "BTPROTO_RFCOMM", INT2FIX(BTPROTO_RFCOMM));
+	rb_define_const(rb_mRbluez, "BTPROTO_HCI", INT2FIX(BTPROTO_HCI));
 
 	/* Class of Device */
-	rb_define_const(Rbluez, "COD_MISC", rb_str_new2("0x0000"));
-	rb_define_const(Rbluez, "COD_COMPUTER_UNCATEGORIZED", rb_str_new2("0x0100"));
-	rb_define_const(Rbluez, "COD_COMPUTER_DESKTOP", rb_str_new2("0x0104"));
-	rb_define_const(Rbluez, "COD_COMPUTER_SERVER", rb_str_new2("0x0108"));
-	rb_define_const(Rbluez, "COD_COMPUTER_LAPTOP", rb_str_new2("0x010c"));
-	rb_define_const(Rbluez, "COD_COMPUTER_HANDHELD", rb_str_new2("0x0110"));
-	rb_define_const(Rbluez, "COD_COMPUTER_PALM", rb_str_new2("0x0114"));
-	rb_define_const(Rbluez, "COD_COMPUTER_WEARABLE", rb_str_new2("0x0118"));
-	rb_define_const(Rbluez, "COD_PHONE_UNCATEGORIZED", rb_str_new2("0x0200"));
-	rb_define_const(Rbluez, "COD_PHONE_CELLULAR", rb_str_new2("0x0204"));
-	rb_define_const(Rbluez, "COD_PHONE_CORDLESS", rb_str_new2("0x0208"));
-	rb_define_const(Rbluez, "COD_PHONE_SMARTPHONE", rb_str_new2("0x020c"));
-	rb_define_const(Rbluez, "COD_PHONE_WIREDMODEM", rb_str_new2("0x0210"));
-	rb_define_const(Rbluez, "COD_PHONE_ISDNACCESS", rb_str_new2("0x0214"));
-	rb_define_const(Rbluez, "COD_PHONE_SIMREADER", rb_str_new2("0x0218"));
+	rb_define_const(rb_mRbluez, "COD_MISC", rb_str_new2("0x0000"));
+	rb_define_const(rb_mRbluez, "COD_COMPUTER_UNCATEGORIZED", rb_str_new2("0x0100"));
+	rb_define_const(rb_mRbluez, "COD_COMPUTER_DESKTOP", rb_str_new2("0x0104"));
+	rb_define_const(rb_mRbluez, "COD_COMPUTER_SERVER", rb_str_new2("0x0108"));
+	rb_define_const(rb_mRbluez, "COD_COMPUTER_LAPTOP", rb_str_new2("0x010c"));
+	rb_define_const(rb_mRbluez, "COD_COMPUTER_HANDHELD", rb_str_new2("0x0110"));
+	rb_define_const(rb_mRbluez, "COD_COMPUTER_PALM", rb_str_new2("0x0114"));
+	rb_define_const(rb_mRbluez, "COD_COMPUTER_WEARABLE", rb_str_new2("0x0118"));
+	rb_define_const(rb_mRbluez, "COD_PHONE_UNCATEGORIZED", rb_str_new2("0x0200"));
+	rb_define_const(rb_mRbluez, "COD_PHONE_CELLULAR", rb_str_new2("0x0204"));
+	rb_define_const(rb_mRbluez, "COD_PHONE_CORDLESS", rb_str_new2("0x0208"));
+	rb_define_const(rb_mRbluez, "COD_PHONE_SMARTPHONE", rb_str_new2("0x020c"));
+	rb_define_const(rb_mRbluez, "COD_PHONE_WIREDMODEM", rb_str_new2("0x0210"));
+	rb_define_const(rb_mRbluez, "COD_PHONE_ISDNACCESS", rb_str_new2("0x0214"));
+	rb_define_const(rb_mRbluez, "COD_PHONE_SIMREADER", rb_str_new2("0x0218"));
 }
