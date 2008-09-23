@@ -431,6 +431,12 @@ VALUE bz_hci_write_local_name(VALUE klass, VALUE str)
 	}
 }
 
+/*
+VALUE bz_hci_create_conn(VALUE klass)
+{
+
+}
+*/
 VALUE bz_hci_close(VALUE klass)
 {
 	rzadapter_t* rza;
@@ -566,6 +572,66 @@ static VALUE bz_rfcomm_accept(VALUE sock)
 	return rb_assoc_new(sock2, rb_str_new2(addr));
 }
 
+
+static VALUE s_recvfrom(sock, argc, argv)
+    VALUE sock;
+    int argc;
+    VALUE *argv;
+{
+    OpenFile *fptr;
+    VALUE str;
+    char buf[1024];
+    socklen_t alen = sizeof buf;
+    VALUE len, flg;
+    long buflen;
+    long slen;
+    int fd, flags;
+
+    rb_scan_args(argc, argv, "11", &len, &flg);
+
+    if (flg == Qnil) flags = 0;
+    else             flags = NUM2INT(flg);
+    buflen = NUM2INT(len);
+
+    GetOpenFile(sock, fptr);
+    if (rb_read_pending(fptr->f)) {
+	rb_raise(rb_eIOError, "recv for buffered IO");
+    }
+    fd = fileno(fptr->f);
+
+    str = rb_tainted_str_new(0, buflen);
+
+  retry:
+    rb_str_locktmp(str);
+    rb_thread_wait_fd(fd);
+    TRAP_BEG;
+    slen = recvfrom(fd, RSTRING(str)->ptr, buflen, flags, (struct sockaddr*)buf, &alen);
+    TRAP_END;
+    rb_str_unlocktmp(str);
+
+    if (slen < 0) {
+	if (rb_io_wait_readable(fd)) {
+	    goto retry;
+	}
+	rb_sys_fail("recvfrom(2)");
+    }
+    if (slen < RSTRING(str)->len) {
+	RSTRING(str)->len = slen;
+	RSTRING(str)->ptr[slen] = '\0';
+    }
+    rb_obj_taint(str);
+	return (VALUE)str;
+}
+
+static VALUE
+bsock_recv(argc, argv, sock)
+    int argc;
+    VALUE *argv;
+    VALUE sock;
+{
+    return s_recvfrom(sock, argc, argv);
+}
+
 static VALUE bz_rfcomm_close(VALUE sock)
 {
     OpenFile *fptr;
@@ -574,7 +640,7 @@ static VALUE bz_rfcomm_close(VALUE sock)
 	rb_raise(rb_eSecurityError, "Insecure: can't close socket");
     }
     GetOpenFile(sock, fptr);
-    shutdown(fileno(fptr->f), 2);
+    shutdown(fileno(fptr->f), 2); /* '2' = sends and receives are disallowed (like close()) */
     shutdown(fileno(fptr->f2), 2);
     return rb_io_close(sock);
 }
@@ -589,9 +655,10 @@ void Init_rbluez()
 	rb_define_method(rb_cHci, "hci_local_name", bz_hci_local_name, 0);
 	rb_define_method(rb_cHci, "hci_local_bdaddr", bz_hci_local_bdaddr, 0);
 	rb_define_method(rb_cHci, "hci_local_cod", bz_hci_local_cod, 0);
-	rb_define_method(rb_cHci, "hci_remote_name", bz_hci_remote_name, 1);
 	rb_define_method(rb_cHci, "hci_set_local_name", bz_hci_write_local_name, 1);
 	rb_define_method(rb_cHci, "hci_set_local_cod", bz_hci_write_local_cod, 1);
+	rb_define_method(rb_cHci, "hci_remote_name", bz_hci_remote_name, 1);
+/*	rb_define_method(rb_cHci, "hci_connection", bz_hci_create_conn, 1); */
 	rb_define_method(rb_cHci, "hci_close", bz_hci_close, 0);
 
 	rb_cRfcomm = rb_define_class_under(rb_mRbluez, "Rfcomm", rb_cIO);
@@ -599,8 +666,10 @@ void Init_rbluez()
 	rb_define_method(rb_cRfcomm, "rfcomm_bind", bz_rfcomm_bind, 0);
 	rb_define_method(rb_cRfcomm, "rfcomm_listen", bz_rfcomm_listen, 1);
 	rb_define_method(rb_cRfcomm, "rfcomm_accept", bz_rfcomm_accept, 0);
+	rb_define_method(rb_cRfcomm, "rfcomm_recv", bsock_recv, -1);
 	rb_define_method(rb_cRfcomm, "rfcomm_close", bz_rfcomm_close, 0);
 
+	/* Rbluez module defines */
 	rb_define_const(rb_mRbluez, "AF_BLUETOOTH", INT2FIX(AF_BLUETOOTH));
 	rb_define_const(rb_mRbluez, "PF_BLUETOOTH", INT2FIX(AF_BLUETOOTH));
 	rb_define_const(rb_mRbluez, "BTPROTO_L2CAP", INT2FIX(BTPROTO_L2CAP));
