@@ -1,5 +1,40 @@
+			FIRST OF ALL
+this code uses many parts of ruby socket source code
+and some from bluez/tools/hcitool.c so many thanks to
+everybody that work on those, in any case thanks to all
+open source community.
+
+-------------------------------------------------------
 This is a porting of the Bluez library to Ruby,
 right now are just few functions and i hope in future 
 to bring them all!
 
-claudio
+HCI actual functions
+	hci_get_route
+	hci_open_dev
+	hci_inquiry
+	hci_read_local_name
+	hci_write_local_name
+	hci_devba
+	hci_read_class_of_dev
+	hci_write_class_of_dev
+	hci_read_remote_name
+	hci_create_connection
+	hci_read_remote_version
+	hci_disconnect
+
+Socket to Rfcomm
+	socket
+	bind
+	listen
+	connect
+	accept
+	recv
+	send
+	close
+
+Rfcomm functions are regular Socket function but 
+rfcomm oriented
+
+
+Claudio

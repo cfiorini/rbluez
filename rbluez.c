@@ -33,11 +33,16 @@
 #include <bluetooth/l2cap.h>
 
 
+#ifdef HAVE_FCNTL_H
+#include <fcntl.h>
+#endif
+
 VALUE rb_mRbluez;
 VALUE rb_cHci;
 VALUE rb_cRfcomm;
 
 void Init_rbluez();
+int Rconnect();
 
 typedef struct rzadapter_s {
 	int dev_id;
@@ -431,12 +436,64 @@ VALUE bz_hci_write_local_name(VALUE klass, VALUE str)
 	}
 }
 
-/*
-VALUE bz_hci_create_conn(VALUE klass)
+VALUE bz_hci_remote_version(VALUE klass, VALUE rb_bdaddr)
 {
+	bdaddr_t bd_addr;
+	uint16_t handle;
+	int dd = 0;
+	char *version_str = bt_malloc(1024);
 
+	rzadapter_t* rza;
+	struct hci_dev_info di;
+	struct hci_conn_info_req *cr;
+	struct hci_version version;
+	
+	str2ba(RSTRING(rb_bdaddr)->ptr, &bd_addr);
+
+	Data_Get_Struct(klass, rzadapter_t, rza);
+	
+	if(hci_devinfo(rza->dev_id, &di) < 0) {
+		return Qnil;
+	}
+
+	cr = malloc(sizeof(*cr) + sizeof(struct hci_conn_info));
+	if (!cr) {
+		close(dd);
+		return Qnil;
+	}
+
+	bacpy(&cr->bdaddr, &bd_addr);
+	cr->type = ACL_LINK;
+	if (hci_create_connection(rza->sock_id, &bd_addr,
+				htobs(di.pkt_type & ACL_PTYPE_MASK),
+				0, 0x01, &handle, 25000) < 0) {
+		close(rza->sock_id);
+		return rb_str_new2("dsds");
+		return Qnil;
+	}
+
+
+	if (hci_read_remote_version(rza->sock_id, handle, &version, 20000) == 0) {
+		char *ver = lmp_vertostr(version.lmp_ver);
+		sprintf(version_str, "\tLMP Version: %s (0x%x) LMP Subversion: 0x%x\n"
+			"\tManufacturer: %s (%d)\n",
+			ver ? ver : "n/a",
+			version.lmp_ver,
+			version.lmp_subver,
+			bt_compidtostr(version.manufacturer),
+			version.manufacturer);
+		if (ver)
+			bt_free(ver);
+	}
+	
+	usleep(10000);
+	hci_disconnect(rza->sock_id, handle, HCI_OE_USER_ENDED_CONNECTION, 10000);
+
+	/* hci_close_dev(dd); */
+
+	return rb_str_new2(version_str);
 }
-*/
+
 VALUE bz_hci_close(VALUE klass)
 {
 	rzadapter_t* rza;
@@ -476,6 +533,40 @@ static VALUE init_sock(VALUE sock, int fd)
     return sock;
 }
 
+static int wait_connectable(int fd)
+{
+	int sockerr;
+	socklen_t sockerrlen;
+	fd_set fds_w;
+	fd_set fds_e;
+
+	for (;;) {
+		FD_ZERO(&fds_w);
+		FD_ZERO(&fds_e);
+
+		FD_SET(fd, &fds_w);
+		FD_SET(fd, &fds_e);
+
+		rb_thread_select(fd+1, 0, &fds_w, &fds_e, 0);
+
+		if (FD_ISSET(fd, &fds_w)) {
+	    		return 0;
+		}
+		else if (FD_ISSET(fd, &fds_e)) {
+	    		sockerrlen = sizeof(sockerr);
+	    		if (getsockopt(fd, SOL_SOCKET, SO_ERROR, (void *)&sockerr,
+			   	&sockerrlen) == 0) {
+
+				if (sockerr == 0)
+		    			continue;	/* workaround for winsock */
+				errno = sockerr;
+	    		}
+	    		return -1;
+		}
+    	}
+	return 0;
+}
+
 /* RFCOMM FUNCTIONS */
 static VALUE bz_rfcomm_init(VALUE sock)
 {
@@ -496,7 +587,7 @@ static VALUE bz_rfcomm_bind(VALUE sock)
 
 	loc_addr.rc_family = AF_BLUETOOTH;
 	loc_addr.rc_bdaddr = *BDADDR_ANY;
-	loc_addr.rc_channel = (uint8_t) 29;
+	loc_addr.rc_channel = (uint8_t) 1;
 
 	GetOpenFile(sock, fptr);
 	if (bind(fileno(fptr->f), (struct sockaddr*)&loc_addr, sizeof(loc_addr)) < 0)
@@ -573,10 +664,7 @@ static VALUE bz_rfcomm_accept(VALUE sock)
 }
 
 
-static VALUE s_recvfrom(sock, argc, argv)
-    VALUE sock;
-    int argc;
-    VALUE *argv;
+static VALUE s_recvfrom(VALUE sock, int argc, VALUE *argv)
 {
     OpenFile *fptr;
     VALUE str;
@@ -623,26 +711,193 @@ static VALUE s_recvfrom(sock, argc, argv)
 	return (VALUE)str;
 }
 
-static VALUE
-bsock_recv(argc, argv, sock)
-    int argc;
-    VALUE *argv;
-    VALUE sock;
+static VALUE bz_rfcomm_recv(VALUE argc, VALUE *argv, VALUE sock)
 {
-    return s_recvfrom(sock, argc, argv);
+	return s_recvfrom(sock, argc, argv);
+}
+
+
+static VALUE bz_rfcomm_send(VALUE argc, VALUE *argv, VALUE sock)
+{
+	VALUE mesg, to;
+	VALUE flags;
+	OpenFile *fptr;
+	FILE *f;
+	int fd, n;
+
+	rb_secure(4);
+	rb_scan_args(argc, argv, "21", &mesg, &flags, &to);
+
+	StringValue(mesg);
+	if (!NIL_P(to)) StringValue(to);
+	GetOpenFile(sock, fptr);
+	f = GetWriteFile(fptr);
+	fd = fileno(f);
+	rb_thread_fd_writable(fd);
+
+    retry:
+
+        TRAP_BEG;
+	n = send(fd, RSTRING(mesg)->ptr, RSTRING(mesg)->len, NUM2INT(flags));
+        TRAP_END;
+
+	if (n < 0) {
+		if (rb_io_wait_writable(fd)) {
+			goto retry;
+		}
+		rb_sys_fail("send(2)");
+	}
+	return INT2FIX(n);
+}
+
+
+static int
+ruby_connect(fd, sockaddr, len, socks)
+    int fd;
+    struct sockaddr *sockaddr;
+    int len;
+    int socks;
+{
+    int status;
+    int mode;
+#if WAIT_IN_PROGRESS > 0
+    int wait_in_progress = -1;
+    int sockerr;
+    socklen_t sockerrlen;
+#endif
+
+#if defined(HAVE_FCNTL)
+# if defined(F_GETFL)
+    mode = fcntl(fd, F_GETFL, 0);
+# else
+    mode = 0;
+# endif
+# endif
+
+#ifdef O_NDELAY
+# define NONBLOCKING O_NDELAY
+#else
+#ifdef O_NBIO
+# define NONBLOCKING O_NBIO
+#else
+# define NONBLOCKING O_NONBLOCK
+#endif
+#endif
+    fcntl(fd, F_SETFL, mode|NONBLOCKING);
+
+    for (;;) {
+	if (socks) {
+	    status = Rconnect(fd, sockaddr, len);
+	}
+	else
+	{
+	    status = connect(fd, sockaddr, len);
+	}
+	if (status < 0) {
+	    switch (errno) {
+	      case EAGAIN:
+#ifdef EINPROGRESS
+	      case EINPROGRESS:
+#endif
+#if WAIT_IN_PROGRESS > 0
+		sockerrlen = sizeof(sockerr);
+		status = getsockopt(fd, SOL_SOCKET, SO_ERROR, (void *)&sockerr, &sockerrlen);
+		if (status) break;
+		if (sockerr) {
+		    status = -1;
+		    errno = sockerr;
+		    break;
+		}
+#endif
+#ifdef EALREADY
+	      case EALREADY:
+#endif
+#if WAIT_IN_PROGRESS > 0
+		wait_in_progress = WAIT_IN_PROGRESS;
+#endif
+		status = wait_connectable(fd);
+		if (status) {
+		    break;
+		}
+		errno = 0;
+		continue;
+
+#if WAIT_IN_PROGRESS > 0
+	      case EINVAL:
+		if (wait_in_progress-- > 0) {
+		    /*
+		     * connect() after EINPROGRESS returns EINVAL on
+		     * some platforms, need to check true error
+		     * status.
+		     */
+		    sockerrlen = sizeof(sockerr);
+		    status = getsockopt(fd, SOL_SOCKET, SO_ERROR, (void *)&sockerr, &sockerrlen);
+		    if (!status && !sockerr) {
+			struct timeval tv = {0, 100000};
+			rb_thread_wait_for(tv);
+			continue;
+		    }
+		    status = -1;
+		    errno = sockerr;
+		}
+		break;
+#endif
+
+#ifdef EISCONN
+	      case EISCONN:
+		status = 0;
+		errno = 0;
+		break;
+#endif
+	      default:
+		break;
+	    }
+	}
+#ifdef HAVE_FCNTL
+	fcntl(fd, F_SETFL, mode);
+#endif
+	return status;
+    }
+}
+
+static VALUE bz_rfcomm_connect(VALUE sock, VALUE addr)
+{
+	OpenFile *fptr;
+	int fd;
+	struct sockaddr_rc rem_addr = { 0 };	
+
+	if(TYPE(addr) != T_STRING) {
+		rb_raise(rb_eTypeError, "not valid value: string request");
+		return Qnil;
+	}	
+
+	rem_addr.rc_family = AF_BLUETOOTH;
+	rem_addr.rc_channel = (uint8_t) 1;
+	str2ba(RSTRING(addr)->ptr, &rem_addr.rc_bdaddr); 
+
+	GetOpenFile(sock, fptr);
+	fd = fileno(fptr->f);
+	if (ruby_connect(fd, (struct sockaddr*)&rem_addr, sizeof(rem_addr), 0) < 0) {
+		rb_sys_fail("connect(2)");
+	}
+
+	return INT2FIX(0);
 }
 
 static VALUE bz_rfcomm_close(VALUE sock)
 {
-    OpenFile *fptr;
+	OpenFile *fptr;
 
-    if (rb_safe_level() >= 4 && !OBJ_TAINTED(sock)) {
-	rb_raise(rb_eSecurityError, "Insecure: can't close socket");
-    }
-    GetOpenFile(sock, fptr);
-    shutdown(fileno(fptr->f), 2); /* '2' = sends and receives are disallowed (like close()) */
-    shutdown(fileno(fptr->f2), 2);
-    return rb_io_close(sock);
+	if (rb_safe_level() >= 4 && !OBJ_TAINTED(sock)) {
+		rb_raise(rb_eSecurityError, "Insecure: can't close socket");
+	}
+
+	GetOpenFile(sock, fptr);
+
+	/* '2' = sends and receives are disallowed (like close()) */
+	shutdown(fileno(fptr->f), 2); 
+	shutdown(fileno(fptr->f2), 2);
+	return rb_io_close(sock);
 }
 
 void Init_rbluez()
@@ -658,15 +913,17 @@ void Init_rbluez()
 	rb_define_method(rb_cHci, "hci_set_local_name", bz_hci_write_local_name, 1);
 	rb_define_method(rb_cHci, "hci_set_local_cod", bz_hci_write_local_cod, 1);
 	rb_define_method(rb_cHci, "hci_remote_name", bz_hci_remote_name, 1);
-/*	rb_define_method(rb_cHci, "hci_connection", bz_hci_create_conn, 1); */
+	rb_define_method(rb_cHci, "hci_remote_version", bz_hci_remote_version, 1);
 	rb_define_method(rb_cHci, "hci_close", bz_hci_close, 0);
 
 	rb_cRfcomm = rb_define_class_under(rb_mRbluez, "Rfcomm", rb_cIO);
 	rb_define_method(rb_cRfcomm, "initialize", bz_rfcomm_init, 0); 
 	rb_define_method(rb_cRfcomm, "rfcomm_bind", bz_rfcomm_bind, 0);
+	rb_define_method(rb_cRfcomm, "rfcomm_connect", bz_rfcomm_connect, 1);
 	rb_define_method(rb_cRfcomm, "rfcomm_listen", bz_rfcomm_listen, 1);
 	rb_define_method(rb_cRfcomm, "rfcomm_accept", bz_rfcomm_accept, 0);
-	rb_define_method(rb_cRfcomm, "rfcomm_recv", bsock_recv, -1);
+	rb_define_method(rb_cRfcomm, "rfcomm_recv", bz_rfcomm_recv, -1);
+	rb_define_method(rb_cRfcomm, "rfcomm_send", bz_rfcomm_send, -1);
 	rb_define_method(rb_cRfcomm, "rfcomm_close", bz_rfcomm_close, 0);
 
 	/* Rbluez module defines */
