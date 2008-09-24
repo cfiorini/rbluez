@@ -15,6 +15,7 @@
  *   You should have received a copy of the GNU General Public License
  *   along with this program.  If not, see <http://www.gnu.org/licenses/>.
 **/
+
 /* Any help and suggestions are always welcome */
 
 
@@ -42,12 +43,17 @@ VALUE rb_cHci;
 VALUE rb_cRfcomm;
 
 void Init_rbluez();
+
 int Rconnect();
 
 typedef struct rzadapter_s {
 	int dev_id;
 	int sock_id;
 } rzadapter_t;
+
+typedef struct rzconn_s {
+	uint16_t handle;
+} rzconn_t;
 
 static char *get_minor_device_name(int major, int minor)
 {
@@ -260,6 +266,17 @@ void rzadapter_free(rzadapter_t* self)
 	free(self);
 }
 
+void rzconn_mark(rzconn_t* self)
+{
+	rb_gc_mark(self->handle);
+}
+
+void rzconn_free(rzconn_t* self)
+{
+	free(self);
+}
+
+
 VALUE bz_hci_init(VALUE klass)
 {
 	rzadapter_t *rza = malloc(sizeof(rzadapter_t));
@@ -436,16 +453,39 @@ VALUE bz_hci_write_local_name(VALUE klass, VALUE str)
 	}
 }
 
+VALUE bz_hci_connect(VALUE klass, VALUE rb_bdaddr)
+{
+	bdaddr_t bd_addr;
+	rzconn_t *rzc = malloc(sizeof(rzconn_t));
+
+	rzadapter_t* rza;
+	struct hci_dev_info di;
+
+	str2ba(RSTRING(rb_bdaddr)->ptr, &bd_addr);
+	Data_Get_Struct(klass, rzadapter_t, rza);
+	
+	if(hci_devinfo(rza->dev_id, &di) < 0) {
+		return Qnil;
+	}
+
+	if (hci_create_connection(rza->sock_id, &bd_addr,
+				htobs(di.pkt_type & ACL_PTYPE_MASK),
+				0, 0x01, &rzc->handle, 25000) < 0) {
+		close(rza->sock_id);
+		return Qnil;
+	}
+
+	return Data_Wrap_Struct(rb_cHci, rzconn_mark, rzconn_free, rzc);
+}
+
 VALUE bz_hci_remote_version(VALUE klass, VALUE rb_bdaddr)
 {
 	bdaddr_t bd_addr;
 	uint16_t handle;
-	int dd = 0;
 	char *version_str = bt_malloc(1024);
 
 	rzadapter_t* rza;
 	struct hci_dev_info di;
-	struct hci_conn_info_req *cr;
 	struct hci_version version;
 	
 	str2ba(RSTRING(rb_bdaddr)->ptr, &bd_addr);
@@ -456,22 +496,12 @@ VALUE bz_hci_remote_version(VALUE klass, VALUE rb_bdaddr)
 		return Qnil;
 	}
 
-	cr = malloc(sizeof(*cr) + sizeof(struct hci_conn_info));
-	if (!cr) {
-		close(dd);
-		return Qnil;
-	}
-
-	bacpy(&cr->bdaddr, &bd_addr);
-	cr->type = ACL_LINK;
 	if (hci_create_connection(rza->sock_id, &bd_addr,
 				htobs(di.pkt_type & ACL_PTYPE_MASK),
 				0, 0x01, &handle, 25000) < 0) {
 		close(rza->sock_id);
-		return rb_str_new2("dsds");
 		return Qnil;
 	}
-
 
 	if (hci_read_remote_version(rza->sock_id, handle, &version, 20000) == 0) {
 		char *ver = lmp_vertostr(version.lmp_ver);
@@ -492,6 +522,21 @@ VALUE bz_hci_remote_version(VALUE klass, VALUE rb_bdaddr)
 	/* hci_close_dev(dd); */
 
 	return rb_str_new2(version_str);
+}
+
+VALUE bz_hci_disconnect(VALUE klass)
+{
+	rzconn_t* rzc;
+	rzadapter_t* rza;
+	
+	Data_Get_Struct(rb_cHci, rzconn_t, rzc);
+	Data_Get_Struct(klass, rzadapter_t, rza);
+
+	if(hci_disconnect(rza->sock_id, rzc->handle, HCI_OE_USER_ENDED_CONNECTION, 10000) < 0) {
+		rb_raise(rb_eScriptError, "Error on closing");
+		return Qnil;
+	}
+	return Qnil;
 }
 
 VALUE bz_hci_close(VALUE klass)
@@ -915,6 +960,8 @@ void Init_rbluez()
 	rb_define_method(rb_cHci, "hci_remote_name", bz_hci_remote_name, 1);
 	rb_define_method(rb_cHci, "hci_remote_version", bz_hci_remote_version, 1);
 	rb_define_method(rb_cHci, "hci_close", bz_hci_close, 0);
+	rb_define_method(rb_cHci, "hci_connect", bz_hci_connect, 1);
+	rb_define_method(rb_cHci, "hci_disconnect", bz_hci_disconnect, 0);
 
 	rb_cRfcomm = rb_define_class_under(rb_mRbluez, "Rfcomm", rb_cIO);
 	rb_define_method(rb_cRfcomm, "initialize", bz_rfcomm_init, 0); 

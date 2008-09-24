@@ -3,7 +3,10 @@ include Rbluez
 
 
 hc = Hci.new
-puts hc.hci_remote_version("00:1c:c1:87:35:34")
+k = hc.hci_connect("00:1c:c1:87:35:34")
+sleep 10
+puts k
+k.hci_disconnect
 hc.hci_close
 
 #bt = Rfcomm.new
