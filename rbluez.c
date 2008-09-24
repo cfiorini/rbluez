@@ -40,6 +40,7 @@
 
 VALUE rb_mRbluez;
 VALUE rb_cHci;
+VALUE rb_cHciConn;
 VALUE rb_cRfcomm;
 
 void Init_rbluez();
@@ -49,6 +50,7 @@ int Rconnect();
 typedef struct rzadapter_s {
 	int dev_id;
 	int sock_id;
+	uint16_t handle;
 } rzadapter_t;
 
 typedef struct rzconn_s {
@@ -258,6 +260,7 @@ void rzadapter_mark(rzadapter_t* self)
 {
 	rb_gc_mark(self->dev_id);
 	rb_gc_mark(self->sock_id);
+	rb_gc_mark(self->handle);
 }
 
 /* Used from Data_Wrap_Stuct to free the memory */
@@ -456,7 +459,6 @@ VALUE bz_hci_write_local_name(VALUE klass, VALUE str)
 VALUE bz_hci_connect(VALUE klass, VALUE rb_bdaddr)
 {
 	bdaddr_t bd_addr;
-	rzconn_t *rzc = malloc(sizeof(rzconn_t));
 
 	rzadapter_t* rza;
 	struct hci_dev_info di;
@@ -470,12 +472,12 @@ VALUE bz_hci_connect(VALUE klass, VALUE rb_bdaddr)
 
 	if (hci_create_connection(rza->sock_id, &bd_addr,
 				htobs(di.pkt_type & ACL_PTYPE_MASK),
-				0, 0x01, &rzc->handle, 25000) < 0) {
+				0, 0x01, &rza->handle, 25000) < 0) {
 		close(rza->sock_id);
 		return Qnil;
 	}
 
-	return Data_Wrap_Struct(rb_cHci, rzconn_mark, rzconn_free, rzc);
+	return INT2NUM(0);
 }
 
 VALUE bz_hci_remote_version(VALUE klass, VALUE rb_bdaddr)
@@ -526,17 +528,15 @@ VALUE bz_hci_remote_version(VALUE klass, VALUE rb_bdaddr)
 
 VALUE bz_hci_disconnect(VALUE klass)
 {
-	rzconn_t* rzc;
 	rzadapter_t* rza;
 	
-	Data_Get_Struct(rb_cHci, rzconn_t, rzc);
 	Data_Get_Struct(klass, rzadapter_t, rza);
 
-	if(hci_disconnect(rza->sock_id, rzc->handle, HCI_OE_USER_ENDED_CONNECTION, 10000) < 0) {
+	if(hci_disconnect(rza->sock_id, rza->handle, HCI_OE_USER_ENDED_CONNECTION, 10000) < 0) {
 		rb_raise(rb_eScriptError, "Error on closing");
 		return Qnil;
 	}
-	return Qnil;
+	return INT2NUM(0);
 }
 
 VALUE bz_hci_close(VALUE klass)
@@ -960,6 +960,8 @@ void Init_rbluez()
 	rb_define_method(rb_cHci, "hci_remote_name", bz_hci_remote_name, 1);
 	rb_define_method(rb_cHci, "hci_remote_version", bz_hci_remote_version, 1);
 	rb_define_method(rb_cHci, "hci_close", bz_hci_close, 0);
+
+/*	rb_cHciConn = rb_define_class_under(rb_mRbluez, "HciConn", rb_cObject); */
 	rb_define_method(rb_cHci, "hci_connect", bz_hci_connect, 1);
 	rb_define_method(rb_cHci, "hci_disconnect", bz_hci_disconnect, 0);
 
