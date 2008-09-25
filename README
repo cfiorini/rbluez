@@ -21,6 +21,9 @@ HCI actual functions
 	hci_read_remote_name
 	hci_create_connection
 	hci_read_remote_version
+	hci_read_link_quality
+	hci_authenticate_link
+	hci_read_trasmit_power_level
 	hci_disconnect
 
 Socket to Rfcomm

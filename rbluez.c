@@ -480,32 +480,16 @@ VALUE bz_hci_connect(VALUE klass, VALUE rb_bdaddr)
 	return INT2NUM(0);
 }
 
-VALUE bz_hci_remote_version(VALUE klass, VALUE rb_bdaddr)
+VALUE bz_hci_remote_version(VALUE klass)
 {
-	bdaddr_t bd_addr;
-	uint16_t handle;
 	char *version_str = bt_malloc(1024);
 
 	rzadapter_t* rza;
-	struct hci_dev_info di;
 	struct hci_version version;
 	
-	str2ba(RSTRING(rb_bdaddr)->ptr, &bd_addr);
-
 	Data_Get_Struct(klass, rzadapter_t, rza);
 	
-	if(hci_devinfo(rza->dev_id, &di) < 0) {
-		return Qnil;
-	}
-
-	if (hci_create_connection(rza->sock_id, &bd_addr,
-				htobs(di.pkt_type & ACL_PTYPE_MASK),
-				0, 0x01, &handle, 25000) < 0) {
-		close(rza->sock_id);
-		return Qnil;
-	}
-
-	if (hci_read_remote_version(rza->sock_id, handle, &version, 20000) == 0) {
+	if (hci_read_remote_version(rza->sock_id, rza->handle, &version, 20000) == 0) {
 		char *ver = lmp_vertostr(version.lmp_ver);
 		sprintf(version_str, "\tLMP Version: %s (0x%x) LMP Subversion: 0x%x\n"
 			"\tManufacturer: %s (%d)\n",
@@ -518,12 +502,67 @@ VALUE bz_hci_remote_version(VALUE klass, VALUE rb_bdaddr)
 			bt_free(ver);
 	}
 	
-	usleep(10000);
-	hci_disconnect(rza->sock_id, handle, HCI_OE_USER_ENDED_CONNECTION, 10000);
-
-	/* hci_close_dev(dd); */
 
 	return rb_str_new2(version_str);
+}
+
+VALUE bz_hci_link_quality(VALUE klass)
+{
+	uint8_t lq;
+	rzadapter_t* rza;
+
+	Data_Get_Struct(klass, rzadapter_t, rza);
+
+	if(hci_read_link_quality(rza->sock_id, rza->handle, &lq, 1000) < 0) {
+		rb_raise(rb_eException, "hci_read_link_quality error");
+		return Qnil;
+	}
+
+	return INT2FIX(lq);
+}
+
+VALUE bz_hci_auth_link(VALUE klass)
+{
+	rzadapter_t* rza;
+
+	Data_Get_Struct(klass, rzadapter_t, rza);
+
+	if(hci_authenticate_link(rza->sock_id, rza->handle, 25000) < 0) {
+		rb_raise(rb_eException, "hci_authenticate_link error");
+		return Qnil;
+	}
+
+	return INT2FIX(0);
+}
+
+VALUE bz_hci_read_tpl(VALUE klass, VALUE rbtype)
+{
+	rzadapter_t* rza;
+	uint8_t type;
+	int8_t level;
+
+	if(TYPE(rbtype) != T_FIXNUM) {
+		rb_raise(rb_eTypeError, "not valid value");
+	}
+
+	if(TYPE(rbtype) == T_NIL) {
+		type = 0;
+	} else {
+		type = FIX2INT(rbtype);
+	}
+/*
+	if(type != 0 || type != 1) {
+		rb_raise(rb_eArgError, "type must be 0 or 1");
+	}
+*/
+	Data_Get_Struct(klass, rzadapter_t, rza);
+
+	if (hci_read_transmit_power_level(rza->sock_id, rza->handle, type, &level, 1000) < 0) {
+		rb_raise(rb_eException, "hci_read_transmit_power_level error");
+		return Qnil;
+	}
+
+	return INT2FIX(level);
 }
 
 VALUE bz_hci_disconnect(VALUE klass)
@@ -958,12 +997,13 @@ void Init_rbluez()
 	rb_define_method(rb_cHci, "hci_set_local_name", bz_hci_write_local_name, 1);
 	rb_define_method(rb_cHci, "hci_set_local_cod", bz_hci_write_local_cod, 1);
 	rb_define_method(rb_cHci, "hci_remote_name", bz_hci_remote_name, 1);
-	rb_define_method(rb_cHci, "hci_remote_version", bz_hci_remote_version, 1);
+	rb_define_method(rb_cHci, "hci_remote_version", bz_hci_remote_version, 0);
 	rb_define_method(rb_cHci, "hci_close", bz_hci_close, 0);
-
-/*	rb_cHciConn = rb_define_class_under(rb_mRbluez, "HciConn", rb_cObject); */
 	rb_define_method(rb_cHci, "hci_connect", bz_hci_connect, 1);
 	rb_define_method(rb_cHci, "hci_disconnect", bz_hci_disconnect, 0);
+	rb_define_method(rb_cHci, "hci_lq", bz_hci_link_quality, 0);
+	rb_define_method(rb_cHci, "hci_auth", bz_hci_auth_link, 0);
+	rb_define_method(rb_cHci, "hci_read_tpl", bz_hci_read_tpl, 1);
 
 	rb_cRfcomm = rb_define_class_under(rb_mRbluez, "Rfcomm", rb_cIO);
 	rb_define_method(rb_cRfcomm, "initialize", bz_rfcomm_init, 0); 

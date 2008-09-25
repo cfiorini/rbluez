@@ -4,7 +4,12 @@ include Rbluez
 
 hc = Hci.new
 hc.hci_connect("00:1c:c1:87:35:34")
-sleep 10
+sleep 5
+puts hc.hci_lq
+puts hc.hci_auth
+puts hc.hci_read_tpl(1)
+puts hc.hci_remote_version
+sleep 5
 hc.hci_disconnect
 hc.hci_close
 
