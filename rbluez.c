@@ -844,6 +844,9 @@ ruby_connect(fd, sockaddr, len, socks)
 {
     int status;
     int mode;
+	status = connect(fd, sockaddr, len);
+	usleep(20000);
+	return status;
 #if WAIT_IN_PROGRESS > 0
     int wait_in_progress = -1;
     int sockerr;
