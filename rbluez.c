@@ -279,7 +279,11 @@ void rzconn_free(rzconn_t* self)
 	free(self);
 }
 
-
+/*
+ * Document-method: new
+ *
+ * Find the first available adapter and open
+ */
 VALUE bz_hci_init(VALUE klass)
 {
 	rzadapter_t *rza = malloc(sizeof(rzadapter_t));
@@ -293,6 +297,18 @@ VALUE bz_hci_init(VALUE klass)
 	return Data_Wrap_Struct(klass, rzadapter_mark, rzadapter_free, rza);
 }
 
+/*
+ * Document-method: hci_scan
+ * Used to scan an area and return an array with  hashes
+ * for each host finded example:
+ *
+ * 	bt = Hci.new
+ *	for r in bt.hci_scan
+ *		puts r[:dev_class]
+ *		puts r[:bdaddr]
+ *	end
+ *	bt.hci_close
+ */
 VALUE bz_hci_inquiry(VALUE klass)
 {
 	rzadapter_t* rza;
@@ -337,7 +353,14 @@ VALUE bz_hci_inquiry(VALUE klass)
 	}
 	return remote_devices;
 }
-
+/*
+ * Document-method: hci_local_name
+ * hci_local_name gets local adapter name
+ * 	bt = Hci.new
+ * 	puts bt.hci_local_name
+ * 	bt.hci_close
+ *
+ */
 VALUE bz_hci_local_name(VALUE klass)
 {
 	rzadapter_t* rza;
@@ -352,6 +375,14 @@ VALUE bz_hci_local_name(VALUE klass)
 	return rb_str_new2(name);
 }
 
+/*
+ * Document-method: hci_local_bdaddr
+ * hci_local_name gets local adapter bdaddr
+ *	bt = Hci.new
+ * 	puts bt.hci_local_bdaddr
+ * 	bt.hci_close
+ *
+ */
 VALUE bz_hci_local_bdaddr(VALUE klass)
 {
 	rzadapter_t* rza;
@@ -367,6 +398,14 @@ VALUE bz_hci_local_bdaddr(VALUE klass)
 	return rb_str_new2(addr);
 }
 
+/*
+ * Document-method: hci_local_cod
+ * hci_local_name gets local adapter class of device
+ * 	bt = Hci.new
+ * 	puts bt.hci_local_cod
+ * 	bt.hci_close
+ *
+ */
 VALUE bz_hci_local_cod(VALUE klass)
 {
 	rzadapter_t* rza;
@@ -386,6 +425,19 @@ VALUE bz_hci_local_cod(VALUE klass)
 	return rb_str_new2(dev_class); 
 }
 
+/*
+ * Document-method: hci_set_local_cod
+ * call-seq: hci_set_local_cod(COD_CONSTANT)
+ *
+ * hci_set_local_cod accept one param that is one of the
+ * CoD constants, example:
+ * 
+ * 	bt = Hci.new
+ * 	bt.hci_set_local_cod(COD_PHONE_CORDLESS)
+ * 	puts bt.hci_local_cod
+ * 	bt.hci_close
+ *
+ */
 VALUE bz_hci_write_local_cod(VALUE klass, VALUE cod)
 {
 	rzadapter_t* rza;
@@ -414,6 +466,18 @@ VALUE bz_hci_write_local_cod(VALUE klass, VALUE cod)
 	}
 }
 
+/*
+ * Document-method: hci_remote_name
+ * call-seq: hci_remote_name(bdaddr)
+ *
+ * hci_remote_name accept one param that is a bdaddr
+ * and return remote bluetooth name
+ * 
+ * 	bt = Hci.new
+ * 	puts bt.hci_remote_name("00:11:22:33:44:55")
+ * 	bt.hci_close
+ *
+ */
 VALUE bz_hci_remote_name(VALUE klass, VALUE str)
 {
 	rzadapter_t* rza;
@@ -435,6 +499,17 @@ VALUE bz_hci_remote_name(VALUE klass, VALUE str)
 	}
 }
 
+/*
+ * Document-method: hci_set_local_name
+ * call-seq: hci_set_local_name(name)
+ *
+ * hci_set_local_name accept one param that is a name
+ * 
+ * 	bt = Hci.new
+ * 	puts bt.hci_set_local_name("myname")
+ * 	bt.hci_close
+ *
+ */
 VALUE bz_hci_write_local_name(VALUE klass, VALUE str)
 {
 	rzadapter_t* rza;
@@ -456,6 +531,19 @@ VALUE bz_hci_write_local_name(VALUE klass, VALUE str)
 	}
 }
 
+/*
+ * Document-method: hci_connect
+ * call-seq: hci_connect(bdaddr)
+ *
+ * hci_connect establish a connection with a remote bluetooth host
+ * this function needs just the a remote bdaddr
+ *
+ * 	bt = Hci.new
+ * 	bt.hci_connect("00:11:22:33:44:55")
+ * 	bt.hci_disconnect
+ * 	bt.hci_close
+ *
+ */
 VALUE bz_hci_connect(VALUE klass, VALUE rb_bdaddr)
 {
 	bdaddr_t bd_addr;
@@ -479,6 +567,7 @@ VALUE bz_hci_connect(VALUE klass, VALUE rb_bdaddr)
 
 	return INT2NUM(0);
 }
+
 
 VALUE bz_hci_remote_version(VALUE klass)
 {
@@ -652,6 +741,11 @@ static int wait_connectable(int fd)
 }
 
 /* RFCOMM FUNCTIONS */
+
+/*
+ * Document-method: new
+ * Doing Rfcomm.new you start the socket and register it.
+ */
 static VALUE bz_rfcomm_init(VALUE sock)
 {
     	int fd;
@@ -987,6 +1081,29 @@ static VALUE bz_rfcomm_close(VALUE sock)
 	return rb_io_close(sock);
 }
 
+/*
+ * Module Rbluez is a binding of Bluez, official Linux bluetooth protocol stack.
+ * This module has some Hci and Rfcoom class. Rfcoom has regular socket
+ * functions that use sockaddr_rc struct. 
+ * To set class of device you can use module constants that starts with COD_
+ *
+ * === Tested Operating System
+ * * Debian Etch & Lenny
+ * * Ubuntu Hardy
+ *
+ * to compile this module you need these packages installed:
+ * * libbluetooth-dev 
+ * * ruby-dev
+ *
+ * and after execute these command:
+ * * ruby extconf.rb
+ * * make
+ * 
+ * and after you can start using this module
+ *
+ * I will happy to get feedback and any others suggestions at claudio@cfiorini.it.
+ *
+ */
 void Init_rbluez()
 {
 	rb_mRbluez = rb_define_module("Rbluez");
@@ -1025,20 +1142,34 @@ void Init_rbluez()
 	rb_define_const(rb_mRbluez, "BTPROTO_RFCOMM", INT2FIX(BTPROTO_RFCOMM));
 	rb_define_const(rb_mRbluez, "BTPROTO_HCI", INT2FIX(BTPROTO_HCI));
 
-	/* Class of Device */
+	/* CoD  Miscellanous */
 	rb_define_const(rb_mRbluez, "COD_MISC", rb_str_new2("0x0000"));
+	/* CoD  Computer */
 	rb_define_const(rb_mRbluez, "COD_COMPUTER_UNCATEGORIZED", rb_str_new2("0x0100"));
+	/* CoD Computer, Desktop */
 	rb_define_const(rb_mRbluez, "COD_COMPUTER_DESKTOP", rb_str_new2("0x0104"));
+	/* CoD Computer, Server */
 	rb_define_const(rb_mRbluez, "COD_COMPUTER_SERVER", rb_str_new2("0x0108"));
+	/* CoD Computer, Laptop */
 	rb_define_const(rb_mRbluez, "COD_COMPUTER_LAPTOP", rb_str_new2("0x010c"));
+	/* CoD Computer, Handheld */
 	rb_define_const(rb_mRbluez, "COD_COMPUTER_HANDHELD", rb_str_new2("0x0110"));
+	/* CoD Computer, Palm */
 	rb_define_const(rb_mRbluez, "COD_COMPUTER_PALM", rb_str_new2("0x0114"));
+	/* CoD Computer, Wereable */
 	rb_define_const(rb_mRbluez, "COD_COMPUTER_WEARABLE", rb_str_new2("0x0118"));
+	/* CoD Phone */
 	rb_define_const(rb_mRbluez, "COD_PHONE_UNCATEGORIZED", rb_str_new2("0x0200"));
+	/* CoD Phone, Cellular */
 	rb_define_const(rb_mRbluez, "COD_PHONE_CELLULAR", rb_str_new2("0x0204"));
+	/* CoD Phone, Cordless */
 	rb_define_const(rb_mRbluez, "COD_PHONE_CORDLESS", rb_str_new2("0x0208"));
+	/* CoD Phone, Smartphone */
 	rb_define_const(rb_mRbluez, "COD_PHONE_SMARTPHONE", rb_str_new2("0x020c"));
+	/* CoD Phone, Wired modem */
 	rb_define_const(rb_mRbluez, "COD_PHONE_WIREDMODEM", rb_str_new2("0x0210"));
+	/* CoD Phone, Isdn access */
 	rb_define_const(rb_mRbluez, "COD_PHONE_ISDNACCESS", rb_str_new2("0x0214"));
+	/* CoD Phone, Sim reader */
 	rb_define_const(rb_mRbluez, "COD_PHONE_SIMREADER", rb_str_new2("0x0218"));
 }
